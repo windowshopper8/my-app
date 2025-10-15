@@ -1,0 +1,23 @@
+
+# .streamlit/config.toml
+
+[theme]
+# A bold, professional primary color 
+primaryColor = "#ff1b1bff"
+
+# Background color of the main content area 
+backgroundColor = "#0b0f5cff"
+
+# Sidebar and secondary component background 
+secondaryBackgroundColor = "#000000ff"
+
+# Text color 
+textColor = "#ffffffff"
+
+# Set a different font family (e.g., Sans-serif is standard)
+font = "sans serif"
+
+# Hide the "Made with Streamlit" footer and the hamburger menu if you want a cleaner look (Optional)
+[client]
+showSidebarNavigation = true # Keep navigation for now
+toolbarMode = "minimal"

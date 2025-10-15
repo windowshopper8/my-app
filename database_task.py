@@ -1,4 +1,3 @@
-1234555555
 from pymongo import MongoClient
 from datetime import datetime
 from bson.objectid import ObjectId
@@ -8,12 +7,7 @@ import os
 
 load_dotenv()
 
-# Check for MONGO_URI in .env file
 mongo_uri = os.getenv('MONGODB_ATLAS_CLUSTER_URI')
-if not mongo_uri:
-    # Use a placeholder URI if not found, but indicate an error is likely
-    print("Warning: MONGO_URI is not set in .env. Using placeholder connection string.")
-    mongo_uri = "mongodb://localhost:27017/" 
 
 
 class DatabaseManager:
@@ -23,66 +17,85 @@ class DatabaseManager:
     def __init__(self, db_name='parking_manager_db', connection_string: str = mongo_uri):
         """
         Initializes the MongoDB connection and collections.
-        Raises ConnectionError if MongoDB is unreachable.
+        (Note: Connection errors are handled externally or by MongoClient)
         """
-        try:
-            self.client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
-            # The ismaster command is cheap and does not require auth.
-            self.client.admin.command('ismaster')
-            self.db = self.client[db_name]
-            self.visitors_collection = self.db.visitors
-            self.init_database()
-            print("✅ Connected to MongoDB successfully!")
-        except Exception as e:
-            print(f"❌ Failed to connect to MongoDB: {e}")
-            raise ConnectionError(f"MongoDB connection failed: {e}")
+        self.client = MongoClient(connection_string)
+        self.db = self.client[db_name]
+        self.visitors_collection = self.db.visitors
+        self.init_database()
 
     def init_database(self):
         """Initialize database with collections and indexes."""
-        # Create unique indexes to prevent duplicate IC numbers and license plates
-        self.visitors_collection.create_index("IC_number", unique=True)
+        # Drop existing indexes first
+        self.visitors_collection.drop_indexes()
+        
+        # Create unique indexes with consistent field names
+        self.visitors_collection.create_index("ic_number", unique=True)
         self.visitors_collection.create_index("license_plate", unique=True)
-        # Create index on unit_number for quick lookups
         self.visitors_collection.create_index("unit_number")
 
-    def _serialize_document(self, document: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        [FIX] Converts a MongoDB BSON document to a Pydantic-compatible,
-        JSON-serializable dictionary by converting ObjectId to string ('_id' to 'id') 
-        and datetime objects to ISO strings.
-        """
-        if not document:
-            return {}
-        
-        # 1. Rename _id to id and convert to string
-        document['id'] = str(document.pop('_id'))
-        
-        # 2. Convert datetime objects to ISO strings
-        if 'registered_at' in document and isinstance(document['registered_at'], datetime):
-            document['registered_at'] = document['registered_at'].isoformat()
-        if 'last_updated' in document and isinstance(document['last_updated'], datetime):
-            document['last_updated'] = document['last_updated'].isoformat()
-
-        return document
-
-    def get_all_visitors(self) -> List[Dict[str, Any]]:
-        """
-        Retrieves all visitor records and returns them as a list of serialized dictionaries.
-        """
+    def create_visitor(self, name: str, ic_number: str, license_plate: str, unit_number: str) -> tuple[dict, bool]:
         try:
-            # Sort by registration time, newest first
-            visitors = list(self.visitors_collection.find().sort("registered_at", -1))
+            # Validate input
+            if not ic_number or not license_plate:
+                return {"detail": "IC number and license plate are required"}, False
             
-            # Apply serialization to every document
-            return [self._serialize_document(visitor) for visitor in visitors]
+            # Print debug info
+            print(f"Trying to insert - IC: {ic_number}, Plate: {license_plate}")
+            
+            # Check for existing visitor with case-insensitive search
+            existing = self.visitors_collection.find_one({
+                "$or": [
+                    {"ic_number": ic_number.upper()},
+                    {"license_plate": license_plate.upper()}
+                ]
+            })
+
+            if existing:
+                duplicate_field = "IC number" if existing.get("ic_number") == ic_number.upper() else "license plate"
+                return {"detail": f"Visitor with this {duplicate_field} already exists"}, False
+
+            # Create new visitor with standardized fields
+            new_visitor = {
+                "name": name,
+                "ic_number": ic_number.upper(),  # Note: consistent field name
+                "license_plate": license_plate.upper(),
+                "unit_number": unit_number,
+                "created_at": datetime.now(),
+                "status": "active"
+            }
+
+            result = self.visitors_collection.insert_one(new_visitor)
+            return {
+                "detail": "Visitor created successfully",
+                "visitor_id": str(result.inserted_id)
+            }, True
+
+        except Exception as e:
+            print(f"Database error details: {str(e)}")  # Debug print
+            return {"detail": f"Database error: {str(e)}"}, False
+        
+    def get_all_visitors(self) -> List[Dict[str, Any]]:
+        """Retrieves all visitor records, converting ObjectId to string"""
+        try:
+            # Sort by creation time, newest first
+            visitors = list(self.visitors_collection.find().sort("created_at", -1))
+            
+            # Convert ObjectID to string and format datetime
+            for visitor in visitors:
+                visitor['_id'] = str(visitor['_id'])
+                # Handle datetime formatting safely
+                if 'created_at' in visitor:
+                    visitor['created_at'] = visitor['created_at'].strftime('%Y-%m-%d %H:%M')
+                else:
+                    visitor['created_at'] = "N/A"
+            return visitors
         except Exception as e:
             print(f"Error fetching visitors: {e}")
             return []
 
     def update_visitor_status(self, visitor_id: str, new_status: str) -> Tuple[Dict[str, Any], bool]:
-        """
-        Updates the status of a specific visitor (e.g., 'Active' to 'Left') and returns the updated record.
-        """
+        """Updates the status of a specific visitor"""
         try:
             if not ObjectId.is_valid(visitor_id):
                 return {"detail": "Invalid visitor ID format."}, False
@@ -98,22 +111,14 @@ class DatabaseManager:
             )
 
             if result.modified_count > 0:
-                # Retrieve the updated document to return to FastAPI
-                updated_doc = self.visitors_collection.find_one({"_id": visitor_object_id})
-                return self._serialize_document(updated_doc), True
-            else:
-                # Check if document exists but wasn't modified (status was same)
-                if self.visitors_collection.find_one({"_id": visitor_object_id}):
-                    return {"detail": "Status already set to this value."}, False
-                return {"detail": "Visitor not found."}, False
+                return {"message": "Visitor status updated successfully"}, True
+            return {"detail": "Visitor not found or status already set."}, False
 
         except Exception as e:
             return {"detail": f"Error updating visitor status: {str(e)}"}, False
-        
+
     def delete_visitor(self, visitor_id: str) -> Tuple[Dict[str, Any], bool]:
-        """
-        Deletes a visitor record by ID.
-        """
+        """Deletes a visitor record by ID"""
         try:
             if not ObjectId.is_valid(visitor_id):
                 return {"detail": "Invalid visitor ID format."}, False
@@ -122,9 +127,8 @@ class DatabaseManager:
             result = self.visitors_collection.delete_one({"_id": visitor_object_id})
             
             if result.deleted_count > 0:
-                return {"message": "Visitor deleted successfully", "deleted_count": result.deleted_count}, True
-            else:
-                return {"detail": "Visitor not found."}, False
+                return {"message": "Visitor deleted successfully"}, True
+            return {"detail": "Visitor not found."}, False
 
         except Exception as e:
             return {"detail": f"Error deleting visitor: {str(e)}"}, False
@@ -155,8 +159,10 @@ def main():
     try:
         # Initialize the database manager instance
         db = DatabaseManager()
-    except ConnectionError:
-        print("Please fix the MongoDB connection issue before proceeding.")
+        print("Connected to MongoDB successfully!")
+    except Exception as e:
+        print(f"Failed to connect to MongoDB: {e}")
+        print("Please ensure your MONGO_URI in the .env file is correct.")
         return
 
     while True:
@@ -172,7 +178,7 @@ def main():
 
             result, success = db.create_visitor(name, ic_number, license_plate, unit_number)
             if success:
-                print(f"✅ Success! Visitor ID: {result.get('id')}")
+                print(f"✅ Success! Visitor ID: {result.get('visitor_id')}")
             else:
                 print(f"❌ Failed to create visitor. Reason: {result.get('detail', 'Unknown error')}")
 
@@ -181,8 +187,12 @@ def main():
             visitors = db.get_all_visitors()
             if visitors:
                 for v in visitors:
-                    # Note: v['registered_at'] is now a string, so we just print it
-                    print(f"ID: {v['id'][:8]}... | Plate: {v['license_plate']} | Name: {v['name']} | Status: {v['status']} | Registered: {v['registered_at']}")
+                    print(f"ID: {v['_id'][:8]}... | "
+                          f"Plate: {v['license_plate']} | "
+                          f"Name: {v['name']} | "
+                          f"Unit: {v['unit_number']} | "
+                          f"Status: {v['status']} | "
+                          f"Created: {v['created_at']}")  # Datetime is already formatted
             else:
                 print("No visitors found.")
 
@@ -197,7 +207,7 @@ def main():
 
             result, success = db.update_visitor_status(visitor_id, new_status)
             if success:
-                print(f"✅ Status updated successfully for ID {result.get('id')}")
+                print(f"✅ Status updated successfully for ID {visitor_id}")
             else:
                 print(f"❌ Failed to update status. Reason: {result.get('detail', 'Unknown error')}")
 
