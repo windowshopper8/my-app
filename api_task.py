@@ -32,6 +32,13 @@ class VisitorStatusUpdate(BaseModel):
     """Schema for updating only the visitor's status."""
     status: str 
 
+class VisitorUpdate(BaseModel):
+    """Schema for updating visitor details."""
+    name: str
+    IC_number: str
+    license_plate: str
+    unit_number: str
+
 class VisitorResponse(BaseModel):
     """Schema for the full visitor response object returned by the API."""
     id: str 
@@ -167,6 +174,45 @@ async def delete_visitor_endpoint(visitor_id: str):
         )
     
     return 
+
+@app.put("/visitors/{visitor_id}", response_model=Dict[str, Any], tags=["Visitors"])
+async def update_visitor_endpoint(visitor_id: str, visitor: VisitorCreate):
+    """Update an existing visitor's details."""
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection failed"
+        )
+    
+    try:
+        # Validate ObjectId
+        if not ObjectId.is_valid(visitor_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid visitor ID format"
+            )
+        
+        result, success = db.update_visitor(
+            visitor_id,
+            visitor.name,
+            visitor.ic_number,
+            visitor.license_plate,
+            visitor.unit_number
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("detail", "Failed to update visitor")
+            )
+            
+        return {"detail": "Visitor updated successfully"}
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8002)

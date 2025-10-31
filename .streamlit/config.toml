@@ -6,7 +6,7 @@
 primaryColor = "#ff1b1bff"
 
 # Background color of the main content area 
-backgroundColor = "#0b0f5cff"
+backgroundColor = "#03064aff"
 
 # Sidebar and secondary component background 
 secondaryBackgroundColor = "#000000ff"

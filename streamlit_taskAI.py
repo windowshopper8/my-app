@@ -4,6 +4,11 @@ import pandas as pd
 from typing import List, Dict, Any
 from datetime import datetime
 import time
+import pytesseract
+from PIL import Image
+import cv2
+import numpy as np
+import re
 
 if 'last_refresh' not in st.session_state:
     st.session_state.last_refresh = time.time()
@@ -12,7 +17,47 @@ if 'refresh_interval' not in st.session_state:
 
 API_BASE_URL = "http://localhost:8000" 
 STATUS_OPTIONS = ["active", "left"]  
-TOTAL_PARKING_SPOTS = 105
+TOTAL_PARKING_SPOTS = 200
+
+# Optional: Set Tesseract path (uncomment and modify if needed)
+# For Windows: pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# For Mac (if not in PATH): pytesseract.pytesseract.tesseract_cmd = r'/opt/homebrew/bin/tesseract'
+
+def extract_license_plate(image):
+    """Extract license plate text from uploaded image using OCR."""
+    try:
+        # Convert PIL image to numpy array for OpenCV
+        img_array = np.array(image)
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        
+        # Apply preprocessing to improve OCR accuracy
+        # 1. Denoise
+        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+        
+        # 2. Increase contrast
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        contrast = clahe.apply(denoised)
+        
+        # 3. Apply threshold
+        _, thresh = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Use Tesseract to extract text
+        # Config for license plates (alphanumeric, limited characters)
+        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        text = pytesseract.image_to_string(thresh, config=custom_config)
+        
+        # Clean up the extracted text
+        plate_text = text.strip().upper()
+        # Remove spaces and special characters
+        plate_text = re.sub(r'[^A-Z0-9]', '', plate_text)
+        
+        return plate_text if plate_text else None
+        
+    except Exception as e:
+        st.error(f"OCR Error: {str(e)}")
+        return None
 
 def check_api_connection():
     """Check if the FastAPI server is running and accessible."""
@@ -22,156 +67,6 @@ def check_api_connection():
     except:
         return False
     
-def search_and_filter_visitors(visitors: List[Dict[str, Any]], 
-                                 search_query: str = "", 
-                                 status_filter: str = "All",
-                                 unit_filter: str = "All",
-                                 date_from = None,
-                                 date_to = None) -> List[Dict[str, Any]]:
-    """
-    Filter visitors based on search query and filters.
-    """
-    if not visitors:
-        return []
-    
-    filtered = visitors.copy()
-    
-    # Search by name, IC, or license plate
-    if search_query:
-        search_query = search_query.lower()
-        filtered = [
-            v for v in filtered
-            if search_query in v.get('name', '').lower() or
-               search_query in v.get('ic_number', '').lower() or
-               search_query in v.get('license_plate', '').lower()
-        ]
-    
-    # Filter by status
-    if status_filter != "All":
-        filtered = [v for v in filtered if v.get('status', '').lower() == status_filter.lower()]
-    
-    # Filter by unit
-    if unit_filter != "All":
-        filtered = [v for v in filtered if v.get('unit_number', '') == unit_filter]
-    
-    # Filter by date range
-    if date_from or date_to:
-        date_filtered = []
-        for v in filtered:
-            try:
-                # Handle both string and datetime objects
-                reg_datetime = v.get('created_at')
-                if isinstance(reg_datetime, str):
-                    reg_date = pd.to_datetime(reg_datetime).date()
-                else:
-                    reg_date = pd.to_datetime(reg_datetime).date()
-                
-                # Check date range
-                include = True
-                if date_from and date_to:
-                    # Both dates selected
-                    if not (date_from <= reg_date <= date_to):
-                        include = False
-                elif date_from:
-                    # Only from date
-                    if reg_date < date_from:
-                        include = False
-                elif date_to:
-                    # Only to date
-                    if reg_date > date_to:
-                        include = False
-                
-                if include:
-                    date_filtered.append(v)
-            except Exception as e:
-                # If date parsing fails, skip this visitor
-                continue
-        filtered = date_filtered
-    
-    return filtered
-
-
-# 🆕 NEW FUNCTION 2: Display Search & Filter UI
-def display_search_filters(visitors: List[Dict[str, Any]]):
-    """
-    Display search and filter controls.
-    Returns filtered visitor list.
-    """
-    st.subheader("🔍 Search & Filter")
-    
-    # Get unique units for filter
-    unique_units = sorted(list(set([v.get('unit_number', '') for v in visitors if v.get('unit_number')])))
-    
-    # Search bar
-    col_search, col_status, col_unit = st.columns([2, 1, 1])
-    
-    with col_search:
-        search_query = st.text_input(
-            "🔎 Search",
-            placeholder="Search by name, IC, or license plate...",
-            key="search_visitors"
-        )
-    
-    with col_status:
-        status_filter = st.selectbox(
-            "Status",
-            options=["All", "Active", "Left"],
-            key="status_filter"
-        )
-    
-    with col_unit:
-        unit_options = ["All"] + unique_units
-        unit_filter = st.selectbox(
-            "Unit Number",
-            options=unit_options,
-            key="unit_filter"
-        )
-    
-    # Date range filter (expandable)
-    with st.expander("📅 Filter by Date Range"):
-        col_date1, col_date2 = st.columns(2)
-        
-        with col_date1:
-            date_from = st.date_input(
-                "From Date",
-                value=None,
-                key="date_from"
-            )
-        
-        with col_date2:
-            date_to = st.date_input(
-                "To Date",
-                value=None,
-                key="date_to"
-            )
-        
-        # 🆕 Debug info - show visitor dates
-        if st.checkbox("Show debug info", key="debug_dates"):
-            st.write("**Visitor registration dates:**")
-            dates = []
-            for v in visitors:
-                try:
-                    reg_date = pd.to_datetime(v.get('created_at')).date()
-                    dates.append(f"{v['name']}: {reg_date}")
-                except:
-                    dates.append(f"{v['name']}: Error parsing date")
-            st.code("\n".join(dates[:10]))  # Show first 10
-    
-    # Apply filters
-    filtered_visitors = search_and_filter_visitors(
-        visitors,
-        search_query,
-        status_filter,
-        unit_filter,
-        date_from,
-        date_to
-    )
-    
-    # Show filter results count
-    if len(filtered_visitors) != len(visitors):
-        st.info(f"📊 Showing {len(filtered_visitors)} of {len(visitors)} visitors")
-    
-    return filtered_visitors
 def get_all_visitors() -> List[Dict[str, Any]]:
     """Get all visitors via API."""
     try: 
@@ -367,25 +262,15 @@ def display_dashboard(visitors: List[Dict[str, Any]]):
         st.success(f"✅ Parking available - {available_spots} spots free!")
     
     
-def display_visitor_table(visitors: List[Dict[str, Any]], show_filters: bool = True):
+def display_visitor_table(visitors: List[Dict[str, Any]]):
     """Displays all visitors in a styled table format."""
     
     if not visitors:
         st.info("No visitors registered yet.")
         return
-    
-    # 🆕 NEW: Add search and filters
-    if show_filters:
-        filtered_visitors = display_search_filters(visitors)
-    else:
-        filtered_visitors = visitors
-    
-    if not filtered_visitors:
-        st.warning("No visitors match your search criteria.")
-        return
         
     # Convert list of dicts to DataFrame for better display
-    df = pd.DataFrame(filtered_visitors)
+    df = pd.DataFrame(visitors)
     
     # Handle both 'id' and '_id' field names from API
     id_field = 'id' if 'id' in df.columns else '_id'
@@ -449,6 +334,41 @@ def create_visitor_form():
     """Form to register a new visitor."""
     st.header("🚗 Register New Visitor")
     
+    # License Plate OCR Section
+    st.subheader("📸 AI License Plate Scanner")
+    
+    col_upload, col_preview = st.columns([1, 1])
+    
+    with col_upload:
+        uploaded_file = st.file_uploader(
+            "Upload License Plate Image (Optional)",
+            type=["jpg", "jpeg", "png"],
+            help="Upload a photo of the license plate for automatic recognition"
+        )
+        
+        if uploaded_file is not None:
+            # Display the uploaded image
+            image = Image.open(uploaded_file)
+            
+            with col_preview:
+                st.image(image, caption="Uploaded Image", use_container_width=True)
+            
+            # Extract license plate button
+            if st.button("🤖 Scan License Plate", type="secondary"):
+                with st.spinner("🔍 AI is reading the license plate..."):
+                    plate_number = extract_license_plate(image)
+                    
+                    if plate_number:
+                        st.success(f"✅ Detected: **{plate_number}**")
+                        # Store in session state to auto-fill
+                        st.session_state.detected_plate = plate_number
+                    else:
+                        st.error("❌ Could not detect license plate. Please enter manually.")
+                        st.session_state.detected_plate = ""
+    
+    st.divider()
+    
+    # Registration form
     with st.form("create_visitor_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
@@ -509,7 +429,7 @@ def edit_and_manage_visitor_form(visitors: List[Dict[str, Any]]):
                 st.markdown(f"**🏠 Unit Number:** {visitor['unit_number']}")
             
             st.markdown(f"**📊 Status:** :blue[{visitor['status'].capitalize()}]")
-            st.markdown(f"**🕐 Registered:** {visitor.get('created_at', 'N/A')}")
+            st.markdown(f"**🕐 Registered:** {visitor.get('registered_at', 'N/A')}")
             
             st.divider()
             
@@ -600,7 +520,6 @@ def main():
         page_icon="🚗",
         layout="wide"
     )
-    
     
     st.title("🚗  Parking Management System")
     st.markdown("🛡️ Register, track, and manage all visitors.🛡️")

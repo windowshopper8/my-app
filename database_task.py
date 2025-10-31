@@ -69,7 +69,7 @@ class DatabaseManager:
             return {
                 "detail": "Visitor created successfully",
                 "visitor_id": str(result.inserted_id)
-            }, True
+            }, True     
 
         except Exception as e:
             print(f"Database error details: {str(e)}")  # Debug print
@@ -93,6 +93,51 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error fetching visitors: {e}")
             return []
+        
+    def update_visitor(self, visitor_id: str, name: str, ic_number: str, 
+                  license_plate: str, unit_number: str) -> tuple[dict, bool]:
+        """Update visitor details in database."""
+        try:
+            # Convert string ID to ObjectId
+            visitor_object_id = ObjectId(visitor_id)
+            
+            # Check if visitor exists
+            existing = self.visitors_collection.find_one({"_id": visitor_object_id})
+            if not existing:
+                return {"detail": "Visitor not found"}, False
+                
+            # Check if IC/license plate is taken by another visitor
+            duplicate = self.visitors_collection.find_one({
+                "_id": {"$ne": visitor_object_id},
+                "$or": [
+                    {"ic_number": ic_number},
+                    {"license_plate": license_plate}
+                ]
+            })
+            
+            if duplicate:
+                field = "IC number" if duplicate.get("ic_number") == ic_number else "license plate"
+                return {"detail": f"This {field} is already registered"}, False
+                
+            # Update visitor
+            result = self.visitors_collection.update_one(
+                {"_id": visitor_object_id},
+                {"$set": {
+                    "name": name,
+                    "ic_number": ic_number,
+                    "license_plate": license_plate,
+                    "unit_number": unit_number,
+                    "updated_at": datetime.now()
+                }}
+            )
+            
+            return (
+                {"detail": "Visitor updated successfully"},
+                result.modified_count > 0
+            )
+            
+        except Exception as e:
+            return {"detail": f"Error updating visitor: {str(e)}"}, False
 
     def update_visitor_status(self, visitor_id: str, new_status: str) -> Tuple[Dict[str, Any], bool]:
         """Updates the status of a specific visitor"""
@@ -150,8 +195,9 @@ def display_menu():
     print("1. Register New Visitor")
     print("2. View All Visitors")
     print("3. Update Visitor Status (Left/Active)")
-    print("4. Delete Visitor")
-    print("5. Exit")
+    print("4. Edit Visitor Details")
+    print("5. Delete Visitor")
+    print("6. Exit")
     print("-"*40)
 
 def main():
@@ -211,7 +257,27 @@ def main():
             else:
                 print(f"❌ Failed to update status. Reason: {result.get('detail', 'Unknown error')}")
 
-        elif choice == '4':
+        elif choice == '4': 
+            print("\n--- Edit Visitor Details ---")
+            visitor_id = input("Enter Visitor ID to edit: ").strip()
+            name = input("Enter new visitor name: ").strip()
+            ic_number = input("Enter new IC Number (Unique): ").strip()
+            license_plate = input("Enter new license plate (Unique): ").strip()
+            unit_number = input("Enter new unit number visiting: ").strip()
+
+            result, success = db.update_visitor(
+                visitor_id,
+                name,
+                ic_number,
+                license_plate,
+                unit_number
+            )
+            if success:
+                print(f"✅ Visitor details updated successfully for ID {visitor_id}")
+            else:
+                print(f"❌ Failed to update visitor. Reason: {result.get('detail', 'Unknown error')}")
+
+        elif choice == '5':
             print("\n--- Delete Visitor ---")
             visitor_id = input("Enter Visitor ID to delete: ").strip()
             confirm = input(f"Are you sure you want to delete record {visitor_id}? (y/n): ")
@@ -224,7 +290,7 @@ def main():
             else:
                 print("Deletion cancelled.")
 
-        elif choice == '5':
+        elif choice == '6':
             print("\nClosing database connection.. Goodbye!")
             db.close_connection()
             break
